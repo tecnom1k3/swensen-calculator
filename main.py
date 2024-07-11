@@ -12,22 +12,51 @@ getcontext().prec = 10
 load_dotenv()
 
 # Get environment variables
-total_funds = Decimal(os.getenv('TOTAL_FUNDS', '0'))
 cache_ttl = int(os.getenv('CACHE_TTL', '3600'))  # Cache TTL in seconds
 stock_price_increase_ratio = Decimal(os.getenv('STOCK_PRICE_INCREASE_RATIO', '1.03'))  # Stock price increase ratio
+categories_to_process = os.getenv('CATEGORIES_TO_PROCESS', '').split(',')
 
 # Define the Swensen model categories and read their funds needed from the .env file
 swensen_model = [
-    {'id': 'DME', 'name': 'Domestic Equity', 'funds_needed': Decimal(os.getenv('DME_FUNDS', '0'))},
-    {'id': 'FRE', 'name': 'Foreign Equity', 'funds_needed': Decimal(os.getenv('FRE_FUNDS', '0'))},
-    {'id': 'EME', 'name': 'Emerging Markets Equity', 'funds_needed': Decimal(os.getenv('EME_FUNDS', '0'))},
-    {'id': 'TRE', 'name': 'Real Estate', 'funds_needed': Decimal(os.getenv('TRE_FUNDS', '0'))},
-    {'id': 'TBI', 'name': 'Bonds', 'funds_needed': Decimal(os.getenv('TBI_FUNDS', '0'))},
-    {'id': 'PEQ', 'name': 'Private Equity', 'funds_needed': Decimal(os.getenv('PEQ_FUNDS', '0'))}
+    {
+        'id': 'DME',
+        'name': 'Domestic Equity',
+        'funds_needed': Decimal(os.getenv('DME_FUNDS', '0'))
+    },
+    {
+        'id': 'FRE',
+        'name': 'Foreign Equity',
+        'funds_needed': Decimal(os.getenv('FRE_FUNDS', '0'))
+    },
+    {
+        'id': 'EME',
+        'name': 'Emerging Markets Equity',
+        'funds_needed': Decimal(os.getenv('EME_FUNDS', '0'))
+    },
+    {
+        'id': 'TRE',
+        'name': 'Real Estate',
+        'funds_needed': Decimal(os.getenv('TRE_FUNDS', '0'))
+    },
+    {
+        'id': 'TBI',
+        'name': 'Bonds',
+        'funds_needed': Decimal(os.getenv('TBI_FUNDS', '0'))
+    },
+    {
+        'id': 'PEQ',
+        'name': 'Private Equity',
+        'funds_needed': Decimal(os.getenv('PEQ_FUNDS', '0'))
+    }
 ]
 
-# Calculate the total funds needed
-total_funds_needed = sum(category['funds_needed'] for category in swensen_model)
+# Filter the categories to process if specified
+if categories_to_process and categories_to_process != ['']:
+    categories_to_process = [category.strip() for category in categories_to_process if category.strip()]
+    swensen_model = [category for category in swensen_model if category['id'] in categories_to_process]
+
+# Calculate the total funds dynamically
+total_funds = sum(category['funds_needed'] for category in swensen_model)
 
 # Create a table for the Swensen model categories
 swensen_table = [
@@ -35,17 +64,9 @@ swensen_table = [
     for category in swensen_model
 ]
 
-# Print the total funds available and total funds needed
+# Print the total funds available
 print("Funds Summary:")
-print(tabulate([['Total funds available', f"${total_funds:.2f}"], ['Total funds needed', f"${total_funds_needed:.2f}"]], headers=["Description", "Amount"]))
-
-# Check if the total funds needed matches the total funds available
-if total_funds == total_funds_needed:
-    print("\nThe total funds needed match the total funds available.")
-else:
-    difference = total_funds - total_funds_needed
-    print("\nThe total funds needed do not match the total funds available.")
-    print(tabulate([['Total funds available', f"${total_funds:.2f}"], ['Total funds needed', f"${total_funds_needed:.2f}"], ['Difference', f"${difference:.2f}"]], headers=["Description", "Amount"]))
+print(tabulate([['Total funds available', f"${total_funds:.2f}"]], headers=["Description", "Amount"]))
 
 # Define the stock tickers and read their values from the .env file
 stock_tickers = {
@@ -63,8 +84,10 @@ cache = dc.Cache('.cache')
 # Create a data structure to hold ticker symbols and their corresponding categories
 ticker_data = []
 total_investment_value = Decimal('0')
+skipped_categories = []
 for category in swensen_model:
     ticker_symbol = stock_tickers.get(category['id'])
+    allocated_funds = category['funds_needed']
     # Check cache first
     if ticker_symbol in cache:
         current_market_price = Decimal(cache[ticker_symbol])
@@ -77,27 +100,32 @@ for category in swensen_model:
     if current_market_price is not None:
         # Calculate adjusted price with the increase ratio
         adjusted_price = current_market_price * stock_price_increase_ratio
-        # Calculate number of shares to buy
-        shares_to_buy = (category['funds_needed'] // adjusted_price).quantize(Decimal('1.'))
-        # Calculate the investment value
-        investment_value = shares_to_buy * current_market_price
-        # Calculate the delta between investment value and original fund value
-        delta = investment_value - category['funds_needed']
+        # Check if the stock price is higher than the total allocated funds
+        if adjusted_price > allocated_funds:
+            print(f"Stock price for {category['name']} (Ticker: {ticker_symbol}) is higher than the allocated funds. Skipping investment in this category.")
+            skipped_categories.append(category['id'])
+        else:
+            # Calculate number of shares to buy
+            shares_to_buy = (allocated_funds // adjusted_price).quantize(Decimal('1.'))
+            # Calculate the investment value
+            investment_value = shares_to_buy * current_market_price
+            # Calculate the delta between investment value and original fund value
+            delta = investment_value - allocated_funds
 
-        ticker_data.append({
-            'category_id': category['id'],
-            'category_name': category['name'],
-            'ticker_symbol': ticker_symbol,
-            'current_market_price': current_market_price,
-            'adjusted_price': adjusted_price,
-            'shares_to_buy': shares_to_buy,
-            'investment_value': investment_value,
-            'original_fund_value': category['funds_needed'],
-            'delta': delta
-        })
+            ticker_data.append({
+                'category_id': category['id'],
+                'category_name': category['name'],
+                'ticker_symbol': ticker_symbol,
+                'current_market_price': current_market_price,
+                'adjusted_price': adjusted_price,
+                'shares_to_buy': shares_to_buy,
+                'investment_value': investment_value,
+                'original_fund_value': allocated_funds,
+                'delta': delta
+            })
 
-        # Add to total investment value
-        total_investment_value += investment_value
+            # Add to total investment value
+            total_investment_value += investment_value
 
 # Close the cache when done
 cache.close()
@@ -126,3 +154,10 @@ print(tabulate([['Total Investment Value', f"${total_investment_value:.2f}"], ['
 # Show a warning if the remainder is negative
 if remainder < 0:
     print("\nWarning: The total investment value exceeds the total funds available!")
+
+# Print instructions for updating the .env file if there are skipped categories
+if skipped_categories:
+    print("\nThe following categories were skipped due to high stock prices:")
+    for category_id in skipped_categories:
+        print(f" - {category_id}")
+    print("\nPlease update the .env file with the categories to process next time.")
